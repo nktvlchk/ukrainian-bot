@@ -301,7 +301,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📗 /explain <i>слово</i> — тлумачний словник (укр-укр)\n"
         "🗣 /voice <i>текст</i> — озвучення українською\n"
         "⭐ /favorites — збережені слова\n"
-        "🎯 /quiz — вікторина\n\n"
         "Надішліть будь-яке слово або фразу! 👇"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -322,8 +321,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "6️⃣ /conjugate <i>дієслово</i> — дієвідмінювання\n"
         "7️⃣ /explain <i>слово</i> — тлумачний словник\n"
         "8️⃣ /voice <i>текст</i> — озвучення 🔊\n"
-        "9️⃣ /favorites — збережені слова\n"
-        "🔟 /quiz — вікторина\n\n"
+        "9️⃣ /favorites — збережені слова\n\n"
         "🔤 Бот автоматично визначає мову.\n"
         f"📚 {len(ALL_WORDS)} слів в базі + Google Translate."
     )
@@ -395,42 +393,6 @@ async def cmd_favorites(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🗑 Очистити обране", callback_data="fav_clear")]]
     await update.message.reply_text(
         text, parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# =====================================================================
-# /quiz
-# =====================================================================
-
-QUIZ_QUESTIONS = [
-    {"q": "Як буде «мать» українською?", "a": "мати", "options": ["мати", "матір", "мамка", "матинка"]},
-    {"q": "Який відмінок відповідає на питання «ким? чим?»", "a": "Орудний", "options": ["Родовий", "Орудний", "Давальний", "Місцевий"]},
-    {"q": "Як утворити кличний від «Олег»?", "a": "Олеже!", "options": ["Олеге!", "Олеже!", "Олегу!", "Олего!"]},
-    {"q": "Яке закінчення має Р.в. для слова «студент»?", "a": "-а (студента)", "options": ["-а (студента)", "-у (студенту)", "-ом (студентом)", "-і (студенті)"]},
-    {"q": "Скільки відмінків в українській мові?", "a": "7", "options": ["6", "7", "8", "5"]},
-    {"q": "Як буде «спасибо» українською?", "a": "Дякую", "options": ["Дякую", "Спасибі", "Дєкую", "Подяка"]},
-    {"q": "Яка множина слова «вікно»?", "a": "вікна", "options": ["вікна", "вікни", "вікної", "вікнята"]},
-    {"q": "«ЬО» пишеться після...", "a": "приголосної", "options": ["голосної", "приголосної", "на початку слова", "після апострофа"]},
-    {"q": "Як правильно: «в Україні» чи «на Україні»?", "a": "в Україні", "options": ["в Україні", "на Україні", "обидва варіанти", "у Україні"]},
-    {"q": "Яке закінчення Д.в. множини?", "a": "-ам / -ям", "options": ["-ам / -ям", "-ах / -ях", "-ами / -ями", "-ів / -їв"]},
-    {"q": "Як утворити по батькові від «Іван» (жін.)?", "a": "Іванівна", "options": ["Іванівна", "Іванова", "Івановна", "Іваненко"]},
-    {"q": "Як буде «пожалуйста» (ответ на спасибо)?", "a": "Прошу", "options": ["Прошу", "Будь ласка", "Нема за що", "Пожалуйста"]},
-]
-
-async def cmd_quiz(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = random.choice(QUIZ_QUESTIONS)
-    options = q["options"][:]
-    random.shuffle(options)
-    ctx.user_data["quiz_answer"] = q["a"]
-
-    keyboard = []
-    for opt in options:
-        keyboard.append([InlineKeyboardButton(opt, callback_data=f"quiz_{opt}")])
-
-    await update.message.reply_text(
-        f"❓ <b>Вікторина</b>\n\n{q['q']}",
-        parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -810,20 +772,6 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         save_favorites(favs)
         await query.edit_message_text("🗑 Обране очищено.")
 
-    # --- Quiz ---
-    elif data.startswith("quiz_"):
-        answer = data[5:]
-        correct = ctx.user_data.get("quiz_answer", "")
-        if answer == correct:
-            text = f"✅ <b>Правильно!</b>\n\nВідповідь: {correct}"
-        else:
-            text = f"❌ <b>Неправильно.</b>\n\nПравильна відповідь: {correct}"
-        keyboard = [[InlineKeyboardButton("🔄 Наступне питання", callback_data="quiz_next")]]
-        await query.edit_message_text(
-            text, parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
     # --- TTS callback ---
     elif data.startswith("tts_"):
         tts_key = data[4:]
@@ -893,19 +841,6 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text += f"<b>{case_name}:</b> {form}\n"
         await query.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-    elif data == "quiz_next":
-        q = random.choice(QUIZ_QUESTIONS)
-        options = q["options"][:]
-        random.shuffle(options)
-        ctx.user_data["quiz_answer"] = q["a"]
-        keyboard = []
-        for opt in options:
-            keyboard.append([InlineKeyboardButton(opt, callback_data=f"quiz_{opt}")])
-        await query.edit_message_text(
-            f"❓ <b>Вікторина</b>\n\n{q['q']}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
 
 
 # =====================================================================
@@ -1134,7 +1069,6 @@ def main():
     app.add_handler(CommandHandler("explain", cmd_explain))
     app.add_handler(CommandHandler("voice", cmd_voice))
     app.add_handler(CommandHandler("favorites", cmd_favorites))
-    app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_word))
@@ -1146,7 +1080,7 @@ def main():
     print("🔄 Google Translate для фраз і невідомих слів")
     print("🔊 Озвучення (gTTS)")
     print("📊 Аналітика: /stats")
-    print("Команди: /start /help /textbook /cases /decline /conjugate /explain /voice /favorites /quiz /stats")
+    print("Команди: /start /help /textbook /cases /decline /conjugate /explain /voice /favorites /stats")
     app.run_polling()
 
 
