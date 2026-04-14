@@ -997,9 +997,24 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
     # 3. Fallback → Google Translate (single word)
+    # Helper: check if translation is actually different from the input
+    def is_good_translation(orig, trans):
+        if not trans:
+            return False
+        o = orig.lower().strip()
+        t = trans.lower().strip()
+        if t == o:
+            return False
+        # Check if only letter substitution (і↔и, ї↔й etc.) — too similar
+        if len(t) == len(o):
+            diffs = sum(1 for a, b in zip(o, t) if a != b)
+            if diffs <= 1:
+                return False
+        return True
+
     if lang == "ru":
         translation = await google_translate(word, "ru_uk")
-        if translation:
+        if is_good_translation(word, translation):
             text = f"<b>{word}</b>\n\n{translation}\n\n<i>(автоматичний переклад)</i>"
             tts_key = tts_store(translation)
             keyboard = [
@@ -1012,8 +1027,9 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
     else:
+        # Try uk→ru first
         translation = await google_translate(word, "uk_ru")
-        if translation and translation.lower() != word:
+        if is_good_translation(word, translation):
             text = f"<b>{word}</b>\n\n{translation}\n\n<i>(автоматичний переклад)</i>"
             tts_key = tts_store(word)
             keyboard = [
@@ -1026,8 +1042,9 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # Try ru→uk as last resort
         translation = await google_translate(word, "ru_uk")
-        if translation and translation.lower() != word:
+        if is_good_translation(word, translation):
             text = f"<b>{word}</b>\n\n{translation}\n\n<i>(автоматичний переклад)</i>"
             tts_key = tts_store(translation)
             keyboard = [
@@ -1042,8 +1059,8 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Nothing worked
     await update.message.reply_text(
-        f"Слово <b>{word}</b> не знайдено.\n"
-        "Спробуйте /textbook — там лексика за темами.",
+        f"Слово <b>{word}</b> не знайдено в словнику.\n"
+        "Спробуйте написати фразу з цим словом — перекладач краще працює з контекстом.",
         parse_mode=ParseMode.HTML
     )
 
