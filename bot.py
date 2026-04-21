@@ -21,7 +21,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 from gtts import gTTS
 import tempfile
 
@@ -242,29 +242,80 @@ def fuzzy_lookup_rus(word: str) -> list:
 # GOOGLE TRANSLATE — fallback for words/phrases not in dictionary
 # =====================================================================
 
+def _do_translate(text: str, source: str, target: str) -> str:
+    """Synchronous translate helper — tries Google, then MyMemory."""
+    # 1) Google Translate
+    try:
+        result = GoogleTranslator(source=source, target=target).translate(text)
+        if result and result.lower().strip() != text.lower().strip():
+            return result
+    except Exception as e:
+        logger.warning(f"Google Translate ({source}→{target}) error: {e}")
+
+    # 2) MyMemory fallback (different translation engine)
+    try:
+        src_code = source if source != 'auto' else 'uk'
+        result = MyMemoryTranslator(source=src_code, target=target).translate(text)
+        if result and result.lower().strip() != text.lower().strip():
+            return result
+    except Exception as e:
+        logger.warning(f"MyMemory ({source}→{target}) error: {e}")
+
+    return ""
+
+
+async def smart_translate(text: str, lang: str) -> tuple:
+    """Smart translate: auto-detects direction, tries multiple engines.
+    Returns (translation, tts_text) where tts_text is always Ukrainian."""
+    loop = asyncio.get_event_loop()
+    word = text.lower().strip()
+
+    if lang == "ru":
+        # Russian → Ukrainian
+        # Try: auto→uk, then ru→uk
+        result = await loop.run_in_executor(None, _do_translate, text, 'auto', 'uk')
+        if not result:
+            result = await loop.run_in_executor(None, _do_translate, text, 'ru', 'uk')
+        return result, result or ""  # TTS = Ukrainian translation
+    else:
+        # Ukrainian (or unknown) → Russian
+        # Try: auto→ru, then uk→ru
+        result = await loop.run_in_executor(None, _do_translate, text, 'auto', 'ru')
+        if not result:
+            result = await loop.run_in_executor(None, _do_translate, text, 'uk', 'ru')
+
+        if result:
+            return result, text  # TTS = original Ukrainian text
+
+        # Still nothing? Maybe it's actually Russian → try auto→uk
+        result = await loop.run_in_executor(None, _do_translate, text, 'auto', 'uk')
+        if result:
+            return result, result  # TTS = Ukrainian translation
+
+        return "", ""
+
+
 async def google_translate(text: str, direction: str) -> str:
-    """Translate text using Google Translate. direction: 'ru_uk', 'uk_ru', or 'auto_ru'/'auto_uk'.
-    Handles long texts by splitting into chunks."""
+    """Legacy translate wrapper for /voice and other commands."""
     try:
         if direction == "ru_uk":
-            translator = GoogleTranslator(source='ru', target='uk')
+            source, target = 'ru', 'uk'
         elif direction == "uk_ru":
-            translator = GoogleTranslator(source='uk', target='ru')
+            source, target = 'uk', 'ru'
         elif direction == "auto_ru":
-            translator = GoogleTranslator(source='auto', target='ru')
+            source, target = 'auto', 'ru'
         elif direction == "auto_uk":
-            translator = GoogleTranslator(source='auto', target='uk')
+            source, target = 'auto', 'uk'
         else:
-            translator = GoogleTranslator(source='auto', target='ru')
+            source, target = 'auto', 'ru'
 
         # Google Translate limit ~5000 chars. Split long texts.
         if len(text) <= 4500:
             result = await asyncio.get_event_loop().run_in_executor(
-                None, translator.translate, text
+                None, _do_translate, text, source, target
             )
             return result or ""
         else:
-            # Split by sentences (on '. ' or '\n')
             parts = []
             current = ""
             for line in text.replace('. ', '.\n').split('\n'):
@@ -280,13 +331,13 @@ async def google_translate(text: str, direction: str) -> str:
             results = []
             for part in parts:
                 r = await asyncio.get_event_loop().run_in_executor(
-                    None, translator.translate, part
+                    None, _do_translate, part, source, target
                 )
                 if r:
                     results.append(r)
             return '\n'.join(results)
     except Exception as e:
-        logger.error(f"Google Translate error: {e}")
+        logger.error(f"Translate error: {e}")
         return ""
 
 
@@ -911,29 +962,10 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── Detect language ──
     lang = detect_language(raw_text)
 
-    # ── Translate via Google Translate (auto-detect for best results) ──
-    translation = None
-    tts_text = ""
+    # ── Translate (Google Translate + MyMemory fallback) ──
     entry = None
     found_word = None
-
-    if lang == "ru":
-        # Russian → Ukrainian: try auto→uk first, then ru→uk
-        translation = await google_translate(raw_text, "auto_uk")
-        if not translation or translation.lower().strip() == word:
-            translation = await google_translate(raw_text, "ru_uk")
-        tts_text = translation or ""
-    else:
-        # Ukrainian (or unknown) → Russian: try auto→ru first, then uk→ru
-        translation = await google_translate(raw_text, "auto_ru")
-        if not translation or translation.lower().strip() == word:
-            translation = await google_translate(raw_text, "uk_ru")
-        tts_text = raw_text  # TTS always Ukrainian
-
-        # If still same word — maybe it's actually Russian, try → Ukrainian
-        if not translation or translation.lower().strip() == word:
-            translation = await google_translate(raw_text, "auto_uk")
-            tts_text = translation or ""
+    translation, tts_text = await smart_translate(raw_text, lang)
 
     # ── Build response ──
     if translation and translation.lower().strip() != word:
