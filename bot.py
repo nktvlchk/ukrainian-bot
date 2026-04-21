@@ -31,6 +31,7 @@ from grammar import (
     VERB_GOVERNMENT, decline_noun, conjugate_verb,
     get_gender_from_pos, get_explanation, EXPLANATORY_DICT
 )
+from wiktionary import lookup_wiktionary, format_wiktionary_entry
 
 load_dotenv()
 
@@ -380,7 +381,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "8️⃣ /voice <i>текст</i> — озвучення 🔊\n"
         "9️⃣ /favorites — збережені слова\n\n"
         "🔤 Бот автоматично визначає мову.\n"
-        f"📚 {len(ALL_WORDS)} слів в базі + Google Translate."
+        f"📚 {len(ALL_WORDS)} слів в базі + Google Translate + Wiktionary (53,000+ слів)."
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -967,18 +968,41 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     found_word = None
     translation, tts_text = await smart_translate(raw_text, lang)
 
+    # ── Wiktionary enrichment (async, for single words) ──
+    wikt_data = None
+    wikt_text = ""
+    if ' ' not in word and len(word) >= 2:
+        try:
+            # Look up word in Wiktionary (53,000+ Ukrainian words)
+            wikt_data = await asyncio.get_event_loop().run_in_executor(
+                None, lookup_wiktionary, word
+            )
+            # If not found, try with translation (for Russian words → Ukrainian)
+            if not wikt_data and translation:
+                trans_word = translation.lower().strip().split()[0] if translation else ""
+                if trans_word and trans_word != word:
+                    wikt_data = await asyncio.get_event_loop().run_in_executor(
+                        None, lookup_wiktionary, trans_word
+                    )
+            if wikt_data:
+                wikt_text = format_wiktionary_entry(wikt_data)
+        except Exception as e:
+            logger.warning(f"Wiktionary lookup error: {e}")
+
     # ── Build response ──
     if translation and translation.lower().strip() != word:
         text = f"<b>{raw_text}</b>\n\n{translation}\n"
 
-        # Bonus: if single word found in dictionary, add grammar info
+        # Bonus: local dictionary grammar info
         if ' ' not in word:
             found_word, entry = fuzzy_lookup_ukr(word)
             if not entry:
                 trans_lower = translation.lower().strip()
                 found_word, entry = fuzzy_lookup_ukr(trans_lower)
             if entry:
-                text += f"\n[ {entry['pos']} ]"
+                # Only show local dict POS if Wiktionary didn't provide it
+                if not wikt_text:
+                    text += f"\n[ {entry['pos']} ]"
                 if entry.get("example"):
                     text += f"\n<i>{entry['example']}</i>"
                 expl = get_explanation(found_word)
@@ -986,23 +1010,34 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     text += f"\n<i>{expl}</i>"
                 text += "\n"
 
+        # Add Wiktionary data (rich definitions from 53k+ word database)
+        if wikt_text:
+            text += f"\n📖 <b>Wiktionary:</b>\n{wikt_text}\n"
+
         keyboard = []
         if tts_text:
             tts_key = tts_store(tts_text)
             keyboard.append([InlineKeyboardButton("Озвучити", callback_data=f"tts_{tts_key}")])
         keyboard.append([InlineKeyboardButton("В обране", callback_data=f"fav_{word[:50]}")])
 
-        # Grammar buttons for single words
-        if ' ' not in word and entry:
+        # Grammar buttons — use Wiktionary POS if local dict doesn't have it
+        effective_pos = ""
+        effective_word = word
+        if ' ' not in word:
+            if entry:
+                effective_pos = entry.get("pos", "").lower()
+                effective_word = found_word or word
+            elif wikt_data:
+                effective_pos = wikt_data.get("pos", "").lower()
+
+        if effective_pos:
             row = []
-            pos = entry.get("pos", "").lower()
-            w = found_word or word
-            if "ім." in pos:
-                row.append(InlineKeyboardButton("Відмінювання", callback_data=f"decl_{w[:25]}"))
-            if "дієсл" in pos:
-                row.append(InlineKeyboardButton("Дієвідмінювання", callback_data=f"conj_{w[:25]}"))
-            if w in VERB_GOVERNMENT:
-                row.append(InlineKeyboardButton("Керування", callback_data=f"gov_{w[:25]}"))
+            if "ім." in effective_pos or effective_pos in ("noun", "ім."):
+                row.append(InlineKeyboardButton("Відмінювання", callback_data=f"decl_{effective_word[:25]}"))
+            if "дієсл" in effective_pos or effective_pos in ("verb", "дієсл."):
+                row.append(InlineKeyboardButton("Дієвідмінювання", callback_data=f"conj_{effective_word[:25]}"))
+            if effective_word in VERB_GOVERNMENT:
+                row.append(InlineKeyboardButton("Керування", callback_data=f"gov_{effective_word[:25]}"))
             if row:
                 keyboard.append(row)
 
@@ -1011,11 +1046,23 @@ async def handle_word(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     else:
-        await update.message.reply_text(
-            f"Не вдалося перекласти <b>{raw_text}</b>.\n"
-            "Спробуйте інше написання або додайте контекст.",
-            parse_mode=ParseMode.HTML
-        )
+        # Translation failed — still try Wiktionary
+        if wikt_text:
+            text = f"<b>{raw_text}</b>\n\n📖 <b>Wiktionary:</b>\n{wikt_text}\n"
+            keyboard = []
+            tts_key = tts_store(word)
+            keyboard.append([InlineKeyboardButton("Озвучити", callback_data=f"tts_{tts_key}")])
+            keyboard.append([InlineKeyboardButton("В обране", callback_data=f"fav_{word[:50]}")])
+            await update.message.reply_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.message.reply_text(
+                f"Не вдалося перекласти <b>{raw_text}</b>.\n"
+                "Спробуйте інше написання або додайте контекст.",
+                parse_mode=ParseMode.HTML
+            )
 
 
 # =====================================================================
@@ -1048,6 +1095,7 @@ def main():
     print(f"📗 Тлумачний словник: {len(EXPLANATORY_DICT)} слів")
     print(f"📌 Керування дієслів: {len(VERB_GOVERNMENT)} дієслів")
     print("🔄 Google Translate для фраз і невідомих слів")
+    print("📖 Wiktionary API: 53,000+ укр слів з граматикою")
     print("🔊 Озвучення (gTTS)")
     print("📊 Аналітика: /stats")
     print("Команди: /start /help /textbook /cases /decline /conjugate /explain /voice /favorites /stats")
